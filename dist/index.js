@@ -17,17 +17,36 @@ const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const db_1 = require("./db");
 const config_1 = require("./config");
 const middleware_1 = require("./middleware");
+const utils_1 = require("./utils");
+const zod_1 = __importDefault(require("zod"));
 const app = (0, express_1.default)();
 app.use(express_1.default.json());
+const userSchema = zod_1.default.object({
+    username: zod_1.default.string().email({
+        message: "username should be email"
+    }),
+    password: zod_1.default.string()
+});
 app.post("/api/v1/signup", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     //TODO: Zod validation
-    const username = req.body.username;
-    const password = req.body.password;
+    let validateData;
+    try {
+        validateData = userSchema.parse(req.body);
+    }
+    catch (e) {
+        res.json({
+            message: e
+        });
+        return;
+    }
+    const username = validateData.username;
+    const password = validateData.password;
     //TODO: hash the password
+    const hashedPass = yield (0, utils_1.hashedPassword)(password);
     try {
         yield db_1.UserModel.create({
             username: username,
-            password: password
+            password: hashedPass
         });
         res.json({
             message: "User signed up"
@@ -41,13 +60,29 @@ app.post("/api/v1/signup", (req, res) => __awaiter(void 0, void 0, void 0, funct
 }));
 app.post("/api/v1/signin", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     //TODO: Zod validation
-    const username = req.body.username;
-    const password = req.body.password;
+    let validateData;
+    try {
+        validateData = userSchema.parse(req.body);
+    }
+    catch (e) {
+        res.json({
+            message: e
+        });
+        return;
+    }
+    const username = validateData.username;
+    const password = validateData.password;
     const existingUser = yield db_1.UserModel.findOne({
-        username,
-        password
+        username
     });
     if (existingUser) {
+        const correctPass = yield (0, utils_1.verifyPassword)(password, existingUser.password || "");
+        if (!correctPass) {
+            res.status(411).json({
+                message: "Wrong Password"
+            });
+            return;
+        }
         const token = jsonwebtoken_1.default.sign({
             id: existingUser._id
         }, config_1.JWT_PASSWORD);
@@ -96,10 +131,72 @@ app.delete("/api/v1/content", middleware_1.userMiddleWare, (req, res) => __await
         message: "Deleted"
     });
 }));
-app.post("/api/v1/content", (req, res) => {
-});
-app.post("/api/v1/mybrain/share", (req, res) => {
-});
-app.get("/api/v1/mybrain/:shareLink", (req, res) => {
-});
+app.post("/api/v1/content", middleware_1.userMiddleWare, (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const link = req.body.link;
+    const type = req.body.type;
+    yield db_1.ContentModel.create({
+        link,
+        type,
+        title: req.body.title,
+        //@ts-ignore
+        userId: req.userId,
+        tags: []
+    });
+}));
+app.post("/api/v1/mybrain/share", middleware_1.userMiddleWare, (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const share = req.body.share;
+    if (share) {
+        const existingLink = yield db_1.LinkModel.findOne({
+            //@ts-ignore
+            userId: req.userId
+        });
+        if (existingLink) {
+            res.json({
+                link: existingLink.hash
+            });
+            return;
+        }
+        const hash = (0, utils_1.random)(10);
+        yield db_1.LinkModel.create({
+            //@ts-ignore
+            userId: req.userId,
+            hash: hash // full url
+        });
+        res.json({
+            link: hash
+        });
+    }
+    else {
+        yield db_1.LinkModel.deleteOne({
+            //@ts-ignore
+            userId: req.userId
+        });
+        res.json({
+            message: "Removed link"
+        });
+    }
+}));
+app.get("/api/v1/mybrain/:shareLink", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const hash = req.params.shareLink;
+    const link = yield db_1.LinkModel.findOne({
+        hash
+    });
+    if (!link) {
+        res.status(411).json({
+            message: "Sorry incorrect input"
+        });
+        return;
+    }
+    //userId
+    const content = yield db_1.ContentModel.find({
+        userId: link.userId
+    });
+    const user = yield db_1.UserModel.findOne({
+        userId: link.userId
+    });
+    res.json({
+        username: user === null || user === void 0 ? void 0 : user.username,
+        content: content
+    });
+}));
 app.listen(3000);
